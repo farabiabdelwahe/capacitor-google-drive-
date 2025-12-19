@@ -1,12 +1,206 @@
-# ccapacitor-google-drive
+# capacitor-google-drive
 
-Google Drive integration for Capacitor
+Google Drive integration for Capacitor - backup and sync files to Google Drive on Android, iOS, and Web.
 
 ## Install
 
 ```bash
-npm install ccapacitor-google-drive
+npm install capacitor-google-drive
 npx cap sync
+```
+
+## Platform Support
+
+| Feature | Android | iOS | Web |
+|---------|:-------:|:---:|:---:|
+| initialize | ✅ | ✅ | ✅ |
+| listFiles | ✅ | ✅ | ✅ |
+| uploadFile | ✅ | ✅ | ✅ |
+| downloadFile | ✅ | ✅ | ✅ |
+| updateFile | ✅ | ✅ | ✅ |
+| deleteFile | ✅ | ✅ | ✅ |
+| createFolder | ✅ | ✅ | ✅ |
+| getFileMetadata | ✅ | ✅ | ✅ |
+| searchFiles | ✅ | ✅ | ✅ |
+
+## Configuration & Authentication
+
+**Important:** This plugin does **not** handle the OAuth 2.0 login flow. You must obtain a valid **OAuth2 Access Token** with appropriate Google Drive scopes before using this plugin.
+
+Use a separate authentication plugin (like `@capacitor-firebase/authentication`, `@codetrix-studio/capacitor-google-auth`, or similar) to obtain the access token.
+
+### Required Scopes
+
+Ensure your auth flow requests one of these scopes:
+- `https://www.googleapis.com/auth/drive` (Full access)
+- `https://www.googleapis.com/auth/drive.file` (Access to files created by the app)
+
+## Usage Examples
+
+### Initialize
+
+Before calling any API methods, you **must** initialize the plugin with an access token:
+
+```typescript
+import { GoogleDrive } from 'capacitor-google-drive';
+
+const initializeDrive = async (accessToken: string) => {
+  try {
+    const result = await GoogleDrive.initialize({ accessToken });
+    if (result.success) {
+      console.log('Google Drive Plugin initialized successfully');
+    }
+  } catch (error) {
+    console.error('Failed to initialize Google Drive:', error);
+  }
+};
+```
+
+### List Files
+
+```typescript
+const listFiles = async () => {
+  const response = await GoogleDrive.listFiles({
+    pageSize: 10,
+    query: "mimeType = 'application/vnd.google-apps.folder'",
+    orderBy: "modifiedTime desc"
+  });
+  
+  response.files.forEach(file => {
+    console.log(`File: ${file.name} (${file.id})`);
+  });
+};
+```
+
+### Create a Folder
+
+```typescript
+const createFolder = async (folderName: string) => {
+  const result = await GoogleDrive.createFolder({
+    name: folderName,
+    // parentFolderId: 'parent_id' // Optional
+  });
+  console.log('Created Folder ID:', result.folderId);
+};
+```
+
+### Upload a File
+
+```typescript
+const uploadFile = async () => {
+  const result = await GoogleDrive.uploadFile({
+    name: 'backup.json',
+    content: JSON.stringify({ data: 'my data' }),
+    mimeType: 'application/json',
+    folderId: 'optional_folder_id'
+  });
+  
+  console.log('Uploaded File ID:', result.fileId);
+};
+```
+
+### Download a File
+
+```typescript
+const downloadFile = async (fileId: string) => {
+  const result = await GoogleDrive.downloadFile({ fileId });
+  console.log('File name:', result.name);
+  console.log('Content:', result.content);
+};
+```
+
+### Update a File
+
+```typescript
+const updateFile = async (fileId: string, newContent: string) => {
+  const result = await GoogleDrive.updateFile({
+    fileId,
+    content: newContent,
+    mimeType: 'application/json'
+  });
+  console.log('Updated File ID:', result.fileId);
+};
+```
+
+### Delete a File
+
+```typescript
+const deleteFile = async (fileId: string) => {
+  const result = await GoogleDrive.deleteFile({ fileId });
+  console.log('Deleted:', result.success);
+};
+```
+
+### Search Files
+
+```typescript
+const searchFiles = async (searchQuery: string) => {
+  const result = await GoogleDrive.searchFiles({
+    query: `name contains '${searchQuery}'`,
+    pageSize: 20
+  });
+  console.log('Found files:', result.files);
+};
+```
+
+## Complete Backup Service Example
+
+Here's a complete example of a backup service using this plugin:
+
+```typescript
+import { GoogleDrive } from 'capacitor-google-drive';
+
+const APP_FOLDER_NAME = 'My App Backup';
+const BACKUP_FILE_NAME = 'backup.json';
+
+class BackupService {
+  private appFolderId: string | null = null;
+
+  async initialize(accessToken: string) {
+    await GoogleDrive.initialize({ accessToken });
+  }
+
+  async ensureAppFolder(): Promise<string> {
+    // Find existing folder
+    const response = await GoogleDrive.listFiles({
+      query: `name = '${APP_FOLDER_NAME}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
+    });
+
+    if (response.files.length > 0) {
+      this.appFolderId = response.files[0].id;
+      return this.appFolderId;
+    }
+
+    // Create new folder
+    const result = await GoogleDrive.createFolder({ name: APP_FOLDER_NAME });
+    this.appFolderId = result.folderId;
+    return this.appFolderId;
+  }
+
+  async backup(data: any) {
+    await this.ensureAppFolder();
+    
+    await GoogleDrive.uploadFile({
+      name: BACKUP_FILE_NAME,
+      content: JSON.stringify(data),
+      mimeType: 'application/json',
+      folderId: this.appFolderId!,
+    });
+  }
+
+  async restore(): Promise<any | null> {
+    await this.ensureAppFolder();
+
+    const response = await GoogleDrive.listFiles({
+      query: `name = '${BACKUP_FILE_NAME}' and '${this.appFolderId}' in parents and trashed = false`,
+    });
+
+    if (response.files.length === 0) return null;
+
+    const result = await GoogleDrive.downloadFile({ fileId: response.files[0].id });
+    return JSON.parse(result.content);
+  }
+}
 ```
 
 ## API
@@ -202,3 +396,7 @@ Search for files
 | **`parents`**        | <code>string[]</code> |
 
 </docgen-api>
+
+## License
+
+MIT

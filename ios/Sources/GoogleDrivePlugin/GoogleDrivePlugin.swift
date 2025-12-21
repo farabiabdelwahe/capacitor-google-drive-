@@ -360,7 +360,7 @@ public class GoogleDrivePlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     @objc func getFileMetadata(_ call: CAPPluginCall) {
-        guard let token = self.accessToken else {
+        guard self.accessToken != nil else {
             call.reject("Plugin not initialized", "NOT_INITIALIZED")
             return
         }

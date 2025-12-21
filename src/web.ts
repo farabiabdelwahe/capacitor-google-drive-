@@ -11,6 +11,11 @@ export class GoogleDriveWeb extends WebPlugin implements GoogleDrivePlugin {
       throw this.createError('Access token is required', 'MISSING_TOKEN', 400);
     }
 
+    // Basic token validation
+    if (options.accessToken.length < 20) {
+      throw this.createError('Invalid access token format', 'INVALID_TOKEN', 400);
+    }
+
     this.accessToken = options.accessToken;
     return { success: true };
   }
@@ -92,6 +97,11 @@ export class GoogleDriveWeb extends WebPlugin implements GoogleDrivePlugin {
     mimeType: string;
     folderId?: string;
   }): Promise<{ fileId: string; webViewLink: string }> {
+    // Validate folderId if provided
+    if (options.folderId && !this.isValidFileId(options.folderId)) {
+      throw this.createError('Invalid folderId format', 'INVALID_FILE_ID', 400);
+    }
+
     const metadata = {
       name: options.name,
       mimeType: options.mimeType,
@@ -136,6 +146,10 @@ export class GoogleDriveWeb extends WebPlugin implements GoogleDrivePlugin {
     name: string;
     mimeType: string;
   }> {
+    if (!this.isValidFileId(options.fileId)) {
+      throw this.createError('Invalid fileId format', 'INVALID_FILE_ID', 400);
+    }
+
     // 1. Get Metadata
     const metaResponse = await this.makeRequest(
       `${this.DRIVE_API_BASE}/files/${options.fileId}?fields=id,name,mimeType`
@@ -160,6 +174,10 @@ export class GoogleDriveWeb extends WebPlugin implements GoogleDrivePlugin {
     content: string;
     mimeType: string;
   }): Promise<{ fileId: string; webViewLink: string }> {
+    if (!this.isValidFileId(options.fileId)) {
+      throw this.createError('Invalid fileId format', 'INVALID_FILE_ID', 400);
+    }
+
     const metadata = {
       mimeType: options.mimeType // Update mimeType if changed, though usually remains same
     };
@@ -196,6 +214,10 @@ export class GoogleDriveWeb extends WebPlugin implements GoogleDrivePlugin {
   }
 
   async deleteFile(options: { fileId: string }): Promise<{ success: boolean }> {
+    if (!this.isValidFileId(options.fileId)) {
+      throw this.createError('Invalid fileId format', 'INVALID_FILE_ID', 400);
+    }
+
     await this.makeRequest(`${this.DRIVE_API_BASE}/files/${options.fileId}`, {
       method: 'DELETE',
     });
@@ -206,6 +228,11 @@ export class GoogleDriveWeb extends WebPlugin implements GoogleDrivePlugin {
     name: string;
     parentFolderId?: string;
   }): Promise<{ folderId: string }> {
+    // Validate parentFolderId if provided
+    if (options.parentFolderId && !this.isValidFileId(options.parentFolderId)) {
+      throw this.createError('Invalid parentFolderId format', 'INVALID_FILE_ID', 400);
+    }
+
     const metadata = {
       name: options.name,
       mimeType: 'application/vnd.google-apps.folder',
@@ -225,6 +252,10 @@ export class GoogleDriveWeb extends WebPlugin implements GoogleDrivePlugin {
   }
 
   async getFileMetadata(options: { fileId: string }): Promise<{ file: DriveFile }> {
+    if (!this.isValidFileId(options.fileId)) {
+      throw this.createError('Invalid fileId format', 'INVALID_FILE_ID', 400);
+    }
+
     const response = await this.makeRequest(
       `${this.DRIVE_API_BASE}/files/${options.fileId}?fields=id,name,mimeType,createdTime,modifiedTime,size,webViewLink,webContentLink,iconLink,thumbnailLink,parents`
     );
@@ -237,5 +268,14 @@ export class GoogleDriveWeb extends WebPlugin implements GoogleDrivePlugin {
     pageSize?: number;
   }): Promise<{ files: DriveFile[] }> {
     return this.listFiles(options);
+  }
+
+  /**
+   * Validates Google Drive file ID format
+   * Google Drive IDs are typically 28-44 alphanumeric characters with hyphens and underscores
+   */
+  private isValidFileId(fileId: string): boolean {
+    const pattern = /^[a-zA-Z0-9_-]{20,60}$/;
+    return pattern.test(fileId);
   }
 }

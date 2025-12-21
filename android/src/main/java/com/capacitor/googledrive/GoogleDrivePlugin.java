@@ -34,6 +34,13 @@ public class GoogleDrivePlugin extends Plugin {
             call.reject("Access token is required", "MISSING_TOKEN");
             return;
         }
+
+        // Basic token validation
+        if (token.isEmpty() || token.length() < 20) {
+            call.reject("Invalid access token format", "INVALID_TOKEN");
+            return;
+        }
+
         this.accessToken = token;
         JSObject ret = new JSObject();
         ret.put("success", true);
@@ -85,6 +92,11 @@ public class GoogleDrivePlugin extends Plugin {
                 call.reject("fileId is required");
                 return;
             }
+
+            if (!isValidFileId(fileId)) {
+                call.reject("Invalid fileId format");
+                return;
+            }
             String url = DRIVE_API_BASE + "/files/" + fileId
                     + "?fields=id,name,mimeType,createdTime,modifiedTime,size,webViewLink,webContentLink,iconLink,thumbnailLink,parents";
             HttpURLConnection conn = createConnection(url, "GET");
@@ -124,6 +136,10 @@ public class GoogleDrivePlugin extends Plugin {
             metadata.put("name", name);
             metadata.put("mimeType", mimeType);
             if (folderId != null) {
+                if (!isValidFileId(folderId)) {
+                    call.reject("Invalid folderId format");
+                    return;
+                }
                 JSONArray parents = new JSONArray();
                 parents.put(folderId);
                 metadata.put("parents", parents);
@@ -163,6 +179,11 @@ public class GoogleDrivePlugin extends Plugin {
             String fileId = call.getString("fileId");
             if (fileId == null) {
                 call.reject("fileId is required");
+                return;
+            }
+
+            if (!isValidFileId(fileId)) {
+                call.reject("Invalid fileId format");
                 return;
             }
 
@@ -216,6 +237,11 @@ public class GoogleDrivePlugin extends Plugin {
                 return;
             }
 
+            if (!isValidFileId(fileId)) {
+                call.reject("Invalid fileId format");
+                return;
+            }
+
             // Using multipart upload for update (PATCH)
             String boundary = "-------314159265358979323846";
             String delimiter = "\r\n--" + boundary + "\r\n";
@@ -262,6 +288,11 @@ public class GoogleDrivePlugin extends Plugin {
                 return;
             }
 
+            if (!isValidFileId(fileId)) {
+                call.reject("Invalid fileId format");
+                return;
+            }
+
             String url = DRIVE_API_BASE + "/files/" + fileId;
             HttpURLConnection conn = createConnection(url, "DELETE");
 
@@ -301,6 +332,10 @@ public class GoogleDrivePlugin extends Plugin {
             metadata.put("mimeType", "application/vnd.google-apps.folder");
 
             if (parentFolderId != null) {
+                if (!isValidFileId(parentFolderId)) {
+                    call.reject("Invalid parentFolderId format");
+                    return;
+                }
                 JSONArray parents = new JSONArray();
                 parents.put(parentFolderId);
                 metadata.put("parents", parents);
@@ -385,5 +420,15 @@ public class GoogleDrivePlugin extends Plugin {
         } else {
             call.reject(responseStr);
         }
+    }
+
+    // Helper method to validate Google Drive file IDs
+    private boolean isValidFileId(String fileId) {
+        if (fileId == null || fileId.isEmpty()) {
+            return false;
+        }
+        // Google Drive IDs are typically 28-44 alphanumeric characters with hyphens and
+        // underscores
+        return fileId.matches("^[a-zA-Z0-9_-]{20,60}$");
     }
 }

@@ -17,7 +17,12 @@ public class GoogleDrivePlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "searchFiles", returnType: CAPPluginReturnPromise)
     ]
     
-    private var accessToken: String?
+    private let tokenQueue = DispatchQueue(label: "com.googledrive.plugin.token")
+    private var _accessToken: String?
+    private var accessToken: String? {
+        get { tokenQueue.sync { _accessToken } }
+        set { tokenQueue.sync { _accessToken = newValue } }
+    }
     private let DRIVE_API_BASE = "https://www.googleapis.com/drive/v3"
     private let UPLOAD_API_BASE = "https://www.googleapis.com/upload/drive/v3"
 
@@ -26,12 +31,19 @@ public class GoogleDrivePlugin: CAPPlugin, CAPBridgedPlugin {
             call.reject("Access token is required", "MISSING_TOKEN")
             return
         }
+        
+        // Basic token validation - check it's not empty and has reasonable length
+        guard !token.isEmpty, token.count > 20 else {
+            call.reject("Invalid access token format", "INVALID_TOKEN")
+            return
+        }
+        
         self.accessToken = token
         call.resolve(["success": true])
     }
     
     @objc func listFiles(_ call: CAPPluginCall) {
-        guard let token = self.accessToken else {
+        guard self.accessToken != nil else {
             call.reject("Plugin not initialized", "NOT_INITIALIZED")
             return
         }
@@ -41,7 +53,11 @@ public class GoogleDrivePlugin: CAPPlugin, CAPBridgedPlugin {
         let orderBy = call.getString("orderBy")
         let pageToken = call.getString("pageToken")
         
-        var components = URLComponents(string: "\(DRIVE_API_BASE)/files")!
+        guard var components = URLComponents(string: "\(DRIVE_API_BASE)/files") else {
+            call.reject("Failed to construct URL")
+            return
+        }
+        
         var queryItems = [
             URLQueryItem(name: "pageSize", value: String(pageSize)),
             URLQueryItem(name: "fields", value: "files(id,name,mimeType,createdTime,modifiedTime,size,webViewLink,webContentLink,iconLink,thumbnailLink,parents),nextPageToken")
@@ -53,7 +69,12 @@ public class GoogleDrivePlugin: CAPPlugin, CAPBridgedPlugin {
         
         components.queryItems = queryItems
         
-        makeRequest(url: components.url!, method: "GET", body: nil, call: call)
+        guard let url = components.url else {
+            call.reject("Failed to construct URL")
+            return
+        }
+        
+        makeRequest(url: url, method: "GET", body: nil, call: call)
     }
     
     @objc func uploadFile(_ call: CAPPluginCall) {
@@ -69,7 +90,12 @@ public class GoogleDrivePlugin: CAPPlugin, CAPBridgedPlugin {
             return
         }
         
+        // Validate folderId if provided
         let folderId = call.getString("folderId")
+        if let folderId = folderId, !isValidFileId(folderId) {
+            call.reject("Invalid folderId format")
+            return
+        }
         
         let boundary = "-------314159265358979323846"
         let delimiter = "\r\n--\(boundary)\r\n"
@@ -90,16 +116,30 @@ public class GoogleDrivePlugin: CAPPlugin, CAPBridgedPlugin {
         var body = Data()
         
         // Metadata part
-        body.append("\(delimiter)Content-Type: application/json; charset=UTF-8\r\n\r\n".data(using: .utf8)!)
-        body.append(try! JSONSerialization.data(withJSONObject: metadata))
+        guard let delimiterData = "\(delimiter)Content-Type: application/json; charset=UTF-8\r\n\r\n".data(using: .utf8),
+              let metadataData = try? JSONSerialization.data(withJSONObject: metadata) else {
+            call.reject("Failed to encode metadata")
+            return
+        }
+        body.append(delimiterData)
+        body.append(metadataData)
         
         // Content part
-        body.append("\(delimiter)Content-Type: \(mimeType)\r\n\r\n".data(using: .utf8)!)
-        body.append(content.data(using: .utf8)!)
+        guard let contentDelimiterData = "\(delimiter)Content-Type: \(mimeType)\r\n\r\n".data(using: .utf8),
+              let contentData = content.data(using: .utf8),
+              let closeDelimiterData = "\(closeDelimiter)".data(using: .utf8) else {
+            call.reject("Failed to encode content")
+            return
+        }
+        body.append(contentDelimiterData)
+        body.append(contentData)
+        body.append(closeDelimiterData)
         
-        body.append("\(closeDelimiter)".data(using: .utf8)!)
+        guard let url = URL(string: "\(UPLOAD_API_BASE)/files?uploadType=multipart") else {
+            call.reject("Failed to construct URL")
+            return
+        }
         
-        let url = URL(string: "\(UPLOAD_API_BASE)/files?uploadType=multipart")!
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -147,8 +187,17 @@ public class GoogleDrivePlugin: CAPPlugin, CAPBridgedPlugin {
             return
         }
         
+        guard isValidFileId(fileId) else {
+            call.reject("Invalid fileId format")
+            return
+        }
+        
         // 1. Get metadata
-        let metaUrl = URL(string: "\(DRIVE_API_BASE)/files/\(fileId)?fields=id,name,mimeType")!
+        guard let metaUrl = URL(string: "\(DRIVE_API_BASE)/files/\(fileId)?fields=id,name,mimeType") else {
+            call.reject("Failed to construct URL")
+            return
+        }
+        
         var metaRequest = URLRequest(url: metaUrl)
         metaRequest.httpMethod = "GET"
         metaRequest.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -168,7 +217,11 @@ public class GoogleDrivePlugin: CAPPlugin, CAPBridgedPlugin {
             }
             
             // 2. Get content
-            let contentUrl = URL(string: "\(self.DRIVE_API_BASE)/files/\(fileId)?alt=media")!
+            guard let contentUrl = URL(string: "\(self.DRIVE_API_BASE)/files/\(fileId)?alt=media") else {
+                call.reject("Failed to construct URL")
+                return
+            }
+            
             var contentRequest = URLRequest(url: contentUrl)
             contentRequest.httpMethod = "GET"
             contentRequest.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -209,6 +262,11 @@ public class GoogleDrivePlugin: CAPPlugin, CAPBridgedPlugin {
             return
         }
         
+        guard isValidFileId(fileId) else {
+            call.reject("Invalid fileId format")
+            return
+        }
+        
         let boundary = "-------314159265358979323846"
         let delimiter = "\r\n--\(boundary)\r\n"
         let closeDelimiter = "\r\n--\(boundary)--"
@@ -221,16 +279,30 @@ public class GoogleDrivePlugin: CAPPlugin, CAPBridgedPlugin {
         var body = Data()
         
         // Metadata part
-        body.append("\(delimiter)Content-Type: application/json; charset=UTF-8\r\n\r\n".data(using: .utf8)!)
-        body.append(try! JSONSerialization.data(withJSONObject: metadata))
+        guard let delimiterData = "\(delimiter)Content-Type: application/json; charset=UTF-8\r\n\r\n".data(using: .utf8),
+              let metadataData = try? JSONSerialization.data(withJSONObject: metadata) else {
+            call.reject("Failed to encode metadata")
+            return
+        }
+        body.append(delimiterData)
+        body.append(metadataData)
         
         // Content part
-        body.append("\(delimiter)Content-Type: \(mimeType)\r\n\r\n".data(using: .utf8)!)
-        body.append(content.data(using: .utf8)!)
+        guard let contentDelimiterData = "\(delimiter)Content-Type: \(mimeType)\r\n\r\n".data(using: .utf8),
+              let contentData = content.data(using: .utf8),
+              let closeDelimiterData = "\(closeDelimiter)".data(using: .utf8) else {
+            call.reject("Failed to encode content")
+            return
+        }
+        body.append(contentDelimiterData)
+        body.append(contentData)
+        body.append(closeDelimiterData)
         
-        body.append("\(closeDelimiter)".data(using: .utf8)!)
+        guard let url = URL(string: "\(UPLOAD_API_BASE)/files/\(fileId)?uploadType=multipart") else {
+            call.reject("Failed to construct URL")
+            return
+        }
         
-        let url = URL(string: "\(UPLOAD_API_BASE)/files/\(fileId)?uploadType=multipart")!
         var request = URLRequest(url: url)
         request.httpMethod = "PATCH"
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -277,7 +349,16 @@ public class GoogleDrivePlugin: CAPPlugin, CAPBridgedPlugin {
             return
         }
         
-        let url = URL(string: "\(DRIVE_API_BASE)/files/\(fileId)")!
+        guard isValidFileId(fileId) else {
+            call.reject("Invalid fileId format")
+            return
+        }
+        
+        guard let url = URL(string: "\(DRIVE_API_BASE)/files/\(fileId)") else {
+            call.reject("Failed to construct URL")
+            return
+        }
+        
         var request = URLRequest(url: url)
         request.httpMethod = "DELETE"
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -309,6 +390,12 @@ public class GoogleDrivePlugin: CAPPlugin, CAPBridgedPlugin {
             return
         }
         
+        // Validate parentFolderId if provided
+        if let parentFolderId = call.getString("parentFolderId"), !isValidFileId(parentFolderId) {
+            call.reject("Invalid parentFolderId format")
+            return
+        }
+        
         let parentFolderId = call.getString("parentFolderId")
         
         var metadata: [String: Any] = [
@@ -320,12 +407,21 @@ public class GoogleDrivePlugin: CAPPlugin, CAPBridgedPlugin {
             metadata["parents"] = [parentFolderId]
         }
         
-        let url = URL(string: "\(DRIVE_API_BASE)/files")!
+        guard let url = URL(string: "\(DRIVE_API_BASE)/files") else {
+            call.reject("Failed to construct URL")
+            return
+        }
+        
+        guard let bodyData = try? JSONSerialization.data(withJSONObject: metadata) else {
+            call.reject("Failed to encode metadata")
+            return
+        }
+        
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try? JSONSerialization.data(withJSONObject: metadata)
+        request.httpBody = bodyData
         
         let task = URLSession.shared.dataTask(with: request) { data, response, error in
             if let error = error {
@@ -370,7 +466,15 @@ public class GoogleDrivePlugin: CAPPlugin, CAPBridgedPlugin {
             return
         }
         
-        let url = URL(string: "\(DRIVE_API_BASE)/files/\(fileId)?fields=id,name,mimeType,createdTime,modifiedTime,size,webViewLink,webContentLink,iconLink,thumbnailLink,parents")!
+        guard isValidFileId(fileId) else {
+            call.reject("Invalid fileId format")
+            return
+        }
+        
+        guard let url = URL(string: "\(DRIVE_API_BASE)/files/\(fileId)?fields=id,name,mimeType,createdTime,modifiedTime,size,webViewLink,webContentLink,iconLink,thumbnailLink,parents") else {
+            call.reject("Failed to construct URL")
+            return
+        }
         
         makeRequest(url: url, method: "GET", body: nil, call: call) { data in
             return ["file": data]
@@ -378,9 +482,14 @@ public class GoogleDrivePlugin: CAPPlugin, CAPBridgedPlugin {
     }
     
     private func makeRequest(url: URL, method: String, body: Data?, call: CAPPluginCall, transform: (([String: Any]) -> [String: Any])? = nil) {
+        guard let token = self.accessToken else {
+            call.reject("Plugin not initialized", "NOT_INITIALIZED")
+            return
+        }
+        
         var request = URLRequest(url: url)
         request.httpMethod = method
-        request.setValue("Bearer \(self.accessToken!)", forHTTPHeaderField: "Authorization")
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         if let body = body {
             request.httpBody = body
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -390,6 +499,15 @@ public class GoogleDrivePlugin: CAPPlugin, CAPBridgedPlugin {
             if let error = error {
                 call.reject(error.localizedDescription)
                 return
+            }
+            
+            // Check HTTP status code
+            if let httpResponse = response as? HTTPURLResponse {
+                guard httpResponse.statusCode >= 200 && httpResponse.statusCode < 300 else {
+                    let errorMessage = data.flatMap { String(data: $0, encoding: .utf8) } ?? "Request failed"
+                    call.reject(errorMessage)
+                    return
+                }
             }
             
             guard let data = data else {
@@ -412,6 +530,17 @@ public class GoogleDrivePlugin: CAPPlugin, CAPBridgedPlugin {
             }
         }
         task.resume()
+    }
+    
+    // MARK: - Helper Methods
+    
+    /// Validates Google Drive file ID format
+    /// Google Drive IDs are typically 28-44 alphanumeric characters with hyphens and underscores
+    private func isValidFileId(_ fileId: String) -> Bool {
+        let pattern = "^[a-zA-Z0-9_-]{20,60}$"
+        let regex = try? NSRegularExpression(pattern: pattern)
+        let range = NSRange(location: 0, length: fileId.utf16.count)
+        return regex?.firstMatch(in: fileId, range: range) != nil
     }
 }
 
